@@ -8,6 +8,7 @@ import { Menu } from "lucide-react" // facultatif: icône; si non installé, rem
 const nav = [
   { href: "/", label: "Accueil" },
   { href: "/horses", label: "Mes chevaux" },
+   { href: "/professionals", label: "Mes professionnels" },
   { href: "/auth", label: "Auth" },
 ]
 
