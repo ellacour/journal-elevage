@@ -47,6 +47,15 @@ export default function NewProfessionalPage() {
   const [website, setWebsite] = useState("")
   const [notes, setNotes] = useState("")
 
+  // --- Adresse (optionnel)
+  const [addrLabel, setAddrLabel] = useState("")
+  const [addrLine1, setAddrLine1] = useState("")
+  const [addrLine2, setAddrLine2] = useState("")
+  const [addrPostal, setAddrPostal] = useState("")
+  const [addrCity, setAddrCity] = useState("")
+  const [addrCountry, setAddrCountry] = useState("FR")
+  // (lat/lng plus tard si besoin)
+
   // Helpers
   const normPhone = (s: string) => s.replace(/\D/g, "")
   const phoneError = useMemo(() => {
@@ -63,9 +72,7 @@ export default function NewProfessionalPage() {
       setUserId(data.user?.id ?? null)
       setLoading(false)
     })
-    return () => {
-      mounted = false
-    }
+    return () => { mounted = false }
   }, [])
 
   async function handleCreate(e: React.FormEvent) {
@@ -88,7 +95,7 @@ export default function NewProfessionalPage() {
         .from("professionals")
         .select("id")
         .eq("kind", kind)
-        .eq("email", emailTrim)
+        .eq("email", emailTrim) // citext => eq ok
         .limit(1)
       if (byEmail && byEmail.length) {
         setSaving(false)
@@ -112,56 +119,38 @@ export default function NewProfessionalPage() {
       }
     }
 
-    // --- Insert ---
-    const payload = {
-      display_name: displayName.trim(),
-      company_name: companyName || null,
-      kind,
-      email: emailTrim || null,
-      phone: phone || null,
-      website: website || null,
-      notes: notes || null,
-      created_by: userId, // compatible avec la policy INSERT
-    }
+    // --- Insert via RPC (adresse + pro en une fois) ---
+    const { data: rpcData, error: rpcError } = await supabase.rpc("create_professional_with_address", {
+      p_display_name: displayName.trim(),
+      p_company_name: companyName || null,
+      p_kind: kind,
+      p_email: emailTrim || null,
+      p_phone: phone || null,
+      p_website: website || null,
+      p_notes: notes || null,
 
-    const { data, error } = await supabase
-      .from("professionals")
-      .insert([payload])
-      .select("id")
-      .single()
+      p_label: addrLabel || null,
+      p_line1: addrLine1 || null,
+      p_line2: addrLine2 || null,
+      p_postal_code: addrPostal || null,
+      p_city: addrCity || null,
+      p_country: addrCountry || null,
+      p_lat: null,
+      p_lng: null,
+    })
 
-    if (error) {
-      // Cas de course: si unique violation, retrouver l'existant et rediriger
-      const duplicate = (error as any)?.code === "23505" || /duplicate|unique/i.test(error.message)
-      if (duplicate) {
-        let targetId: string | null = null
-        if (emailTrim) {
-          const { data: byMail } = await supabase
-            .from("professionals")
-            .select("id")
-            .eq("kind", kind)
-            .eq("email", emailTrim)
-            .limit(1)
-          targetId = byMail?.[0]?.id ?? null
-        }
-        if (!targetId && phoneDigits) {
-          const { data: byPh } = await supabase
-            .from("professionals")
-            .select("id")
-            .eq("kind", kind)
-            .ilike("phone", `%${phoneDigits}%`)
-            .limit(1)
-          targetId = byPh?.[0]?.id ?? null
-        }
-        setSaving(false)
-        if (targetId) return router.push(`/professionals/${targetId}`)
-      }
+    if (rpcError) {
+      const duplicate = /duplicate|already exists|unique/i.test(rpcError.message)
       setSaving(false)
-      return setError(error.message)
+      return setError(
+        duplicate
+          ? "Cette adresse existe déjà dans ton espace. Elle a peut-être déjà été créée pour un autre pro."
+          : rpcError.message
+      )
     }
 
     setSaving(false)
-    router.push(`/professionals/${data?.id}`)
+    router.push(`/professionals/${rpcData}`)
   }
 
   if (loading) return <div className="p-6">Chargement…</div>
@@ -263,6 +252,78 @@ export default function NewProfessionalPage() {
               placeholder="Infos utiles (secteur, délais…)"
             />
           </div>
+        </div>
+
+        {/* --- Adresse (optionnel) --- */}
+        <div className="border-t pt-4 space-y-4">
+          <h2 className="text-lg font-semibold">Adresse (optionnel)</h2>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm font-medium mb-1">Libellé</label>
+              <input
+                className="w-full p-3 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                placeholder="Cabinet, Domicile…"
+                value={addrLabel}
+                onChange={(e) => setAddrLabel(e.target.value)}
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium mb-1">Pays</label>
+              <input
+                className="w-full p-3 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                value={addrCountry}
+                onChange={(e) => setAddrCountry(e.target.value)}
+                placeholder="FR"
+              />
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium mb-1">Adresse (ligne 1)</label>
+            <input
+              className="w-full p-3 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+              placeholder="12 rue des Écuries"
+              value={addrLine1}
+              onChange={(e) => setAddrLine1(e.target.value)}
+            />
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm font-medium mb-1">Complément</label>
+              <input
+                className="w-full p-3 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                placeholder="Bât A, 2e étage…"
+                value={addrLine2}
+                onChange={(e) => setAddrLine2(e.target.value)}
+              />
+            </div>
+            <div className="grid grid-cols-3 gap-2">
+              <div className="col-span-1">
+                <label className="block text-sm font-medium mb-1">CP</label>
+                <input
+                  className="w-full p-3 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  placeholder="31540"
+                  value={addrPostal}
+                  onChange={(e) => setAddrPostal(e.target.value)}
+                />
+              </div>
+              <div className="col-span-2">
+                <label className="block text-sm font-medium mb-1">Ville</label>
+                <input
+                  className="w-full p-3 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  placeholder="Saint-Félix-Lauragais"
+                  value={addrCity}
+                  onChange={(e) => setAddrCity(e.target.value)}
+                />
+              </div>
+            </div>
+          </div>
+
+          <p className="text-xs text-gray-500">
+            Si tu renseignes <b>ligne 1 + CP + ville</b>, l’adresse sera créée et liée automatiquement.
+          </p>
         </div>
 
         <div className="pt-2">

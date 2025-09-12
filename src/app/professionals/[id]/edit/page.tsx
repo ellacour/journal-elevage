@@ -7,6 +7,17 @@ import Link from "next/link"
 import { supabase } from "@/lib/supabaseClient"
 
 // === Types ===
+export type ProfessionKind =
+  | "coach"
+  | "veterinaire"
+  | "marechal"
+  | "osteopathe"
+  | "dentiste"
+  | "saddle_fitter"
+  | "physio"
+  | "shiatsu"
+  | "autre"
+
 export type Professional = {
   id: string
   display_name: string
@@ -22,16 +33,18 @@ export type Professional = {
   created_by: string | null
 }
 
-export type ProfessionKind =
-  | "coach"
-  | "veterinaire"
-  | "marechal"
-  | "osteopathe"
-  | "dentiste"
-  | "saddle_fitter"
-  | "physio"
-  | "shiatsu"
-  | "autre"
+type Address = {
+  id: string
+  label: string | null
+  line1: string
+  line2: string | null
+  postal_code: string
+  city: string
+  country: string | null
+  lat: number | null
+  lng: number | null
+  created_by: string
+}
 
 const PROF_KIND_OPTIONS: { value: ProfessionKind; label: string }[] = [
   { value: "coach", label: "Coach" },
@@ -67,12 +80,25 @@ export default function EditProfessionalPage() {
   const [notes, setNotes] = useState("")
   const [isVerified, setIsVerified] = useState(false)
 
+  // Adresse (édition)
+  const [addrLabel, setAddrLabel] = useState("")
+  const [addrLine1, setAddrLine1] = useState("")
+  const [addrLine2, setAddrLine2] = useState("")
+  const [addrPostal, setAddrPostal] = useState("")
+  const [addrCity, setAddrCity] = useState("")
+  const [addrCountry, setAddrCountry] = useState("FR")
+  const [clearAddress, setClearAddress] = useState(false) // checkbox "Retirer l'adresse"
+
   // Simple validation helpers
   const phoneError = useMemo(() => {
     if (!phone) return null
     const digits = phone.replace(/\D/g, "")
     return digits.length < 9 ? "Numéro de téléphone invalide" : null
   }, [phone])
+
+  const addressProvided = useMemo(() => {
+    return addrLine1.trim() !== "" && addrPostal.trim() !== "" && addrCity.trim() !== ""
+  }, [addrLine1, addrPostal, addrCity])
 
   useEffect(() => {
     let ignore = false
@@ -108,23 +134,43 @@ export default function EditProfessionalPage() {
         .eq("id", id)
         .single()
 
-      if (!ignore) {
-        if (error) {
-          setError(error.message)
-        } else if (data) {
-          const p = data as Professional
-          setPro(p)
-          setDisplayName(p.display_name ?? "")
-          setCompanyName(p.company_name ?? "")
-          setKind(p.kind)
-          setEmail(p.email ?? "")
-          setPhone(p.phone ?? "")
-          setWebsite(p.website ?? "")
-          setNotes(p.notes ?? "")
-          setIsVerified(!!p.is_verified)
-        }
-        setLoading(false)
+      if (error) {
+        if (!ignore) { setError(error.message); setLoading(false) }
+        return
       }
+
+      const p = data as Professional
+      if (!ignore) {
+        setPro(p)
+        setDisplayName(p.display_name ?? "")
+        setCompanyName(p.company_name ?? "")
+        setKind(p.kind)
+        setEmail(p.email ?? "")
+        setPhone(p.phone ?? "")
+        setWebsite(p.website ?? "")
+        setNotes(p.notes ?? "")
+        setIsVerified(!!p.is_verified)
+      }
+
+      // Load address if any (pré-remplissage uniquement)
+      if (p.address_id) {
+        const { data: addr, error: aerr } = await supabase
+          .from("addresses")
+          .select("id, label, line1, line2, postal_code, city, country, lat, lng, created_by")
+          .eq("id", p.address_id)
+          .single()
+        if (!ignore && !aerr && addr) {
+          const a = addr as Address
+          setAddrLabel(a.label ?? "")
+          setAddrLine1(a.line1 ?? "")
+          setAddrLine2(a.line2 ?? "")
+          setAddrPostal(a.postal_code ?? "")
+          setAddrCity(a.city ?? "")
+          setAddrCountry(a.country ?? "FR")
+        }
+      }
+
+      if (!ignore) setLoading(false)
     })()
     return () => { ignore = true }
   }, [id])
@@ -133,6 +179,63 @@ export default function EditProfessionalPage() {
     if (!pro) return false
     return isAdmin || (!!userId && pro.created_by === userId)
   }, [pro, userId, isAdmin])
+
+  async function findOrCreateAddressForUser(): Promise<string | null> {
+    if (!userId) return null
+    if (!addressProvided) return null
+
+    const norm = (s: string) => s.normalize().trim().toLowerCase()
+
+    const nLine1 = norm(addrLine1)
+    const nLine2 = norm(addrLine2 || "")
+    const nPostal = norm(addrPostal)
+    const nCity  = norm(addrCity)
+    const nCountry = norm(addrCountry || "FR")
+
+    // 1) Tenter de retrouver une adresse existante de l'utilisateur (match "normalisé")
+    const { data: existing, error: selErr } = await supabase
+      .from("addresses")
+      .select("id, line1, line2, postal_code, city, country")
+      .eq("created_by", userId)
+      .ilike("line1", addrLine1.trim()) // heuristique souple (ilike)
+      .eq("postal_code", addrPostal.trim())
+      .ilike("city", addrCity.trim())
+      .eq("country", (addrCountry || "FR").trim())
+      .limit(5)
+
+    if (!selErr && existing && existing.length) {
+      const match = existing.find(a =>
+        norm(a.line1) === nLine1 &&
+        norm(a.line2 || "") === nLine2 &&
+        norm(a.postal_code) === nPostal &&
+        norm(a.city) === nCity &&
+        norm(a.country || "fr") === nCountry
+      )
+      if (match) return match.id
+    }
+
+    // 2) Sinon, créer une nouvelle adresse
+    const insertPayload = {
+      created_by: userId,
+      label: addrLabel || null,
+      line1: addrLine1.trim(),
+      line2: addrLine2 ? addrLine2.trim() : null,
+      postal_code: addrPostal.trim(),
+      city: addrCity.trim(),
+      country: (addrCountry || "FR").trim(),
+      lat: null,
+      lng: null,
+    }
+
+    const { data: inserted, error: insErr } = await supabase
+      .from("addresses")
+      .insert([insertPayload])
+      .select("id")
+      .single()
+
+    if (insErr) throw insErr
+    return inserted?.id ?? null
+  }
 
   async function handleSave(e: React.FormEvent) {
     e.preventDefault()
@@ -144,27 +247,50 @@ export default function EditProfessionalPage() {
 
     setSaving(true); setError(null)
 
-    const payload: Partial<Professional> = {
-      display_name: displayName.trim(),
-      company_name: companyName || null,
-      kind,
-      email: email || null,
-      phone: phone || null,
-      website: website || null,
-      notes: notes || null,
-      // L'admin peut modifier le flag; sinon on ne l'envoie pas (la RLS refusera de toute façon)
-      ...(isAdmin ? { is_verified: isVerified } : {}),
+    try {
+      // Résoudre l'address_id cible selon les champs saisis
+      let nextAddressId: string | null = pro.address_id
+
+      if (clearAddress) {
+        nextAddressId = null
+      } else if (addressProvided) {
+        nextAddressId = await findOrCreateAddressForUser()
+      } else {
+        // adresse non fournie => on détache
+        nextAddressId = null
+      }
+
+      const payload: Partial<Professional> = {
+        display_name: displayName.trim(),
+        company_name: companyName || null,
+        kind,
+        email: email || null,
+        phone: phone || null,
+        website: website || null,
+        notes: notes || null,
+        address_id: nextAddressId,
+        ...(isAdmin ? { is_verified: isVerified } : {}),
+      }
+
+      const { error: upErr } = await supabase
+        .from("professionals")
+        .update(payload)
+        .eq("id", pro.id)
+
+      if (upErr) throw upErr
+
+      setSaving(false)
+      router.push(`/professionals/${pro.id}`)
+    } catch (e: any) {
+      setSaving(false)
+      const msg = typeof e?.message === "string" ? e.message : "Erreur lors de l’enregistrement."
+      // Message plus clair si contrainte d’unicité adresse côté DB
+      const duplicate = /duplicate|already exists|unique/i.test(msg)
+      setError(duplicate
+        ? "Cette adresse existe déjà dans ton espace. Elle a peut-être déjà été créée pour un autre pro."
+        : msg
+      )
     }
-
-    const { error } = await supabase
-      .from("professionals")
-      .update(payload)
-      .eq("id", pro.id)
-
-    setSaving(false)
-    if (error) return setError(error.message)
-
-    router.push(`/professionals/${pro.id}`)
   }
 
   if (loading) return <div className="min-h-screen p-6">Chargement…</div>
@@ -193,12 +319,6 @@ export default function EditProfessionalPage() {
         <p className="text-gray-600">Vous n'avez pas les droits pour modifier ce professionnel.</p>
         <div className="mt-4 flex gap-3">
           <Link href={`/professionals/${pro.id}`} className="text-blue-600 underline">← Retour à la fiche</Link>
-          {isAdmin && (
-            <button
-              onClick={() => router.refresh()}
-              className="text-sm text-gray-600 underline"
-            >Rafraîchir</button>
-          )}
         </div>
       </div>
     )
@@ -291,6 +411,95 @@ export default function EditProfessionalPage() {
             onChange={(e) => setNotes(e.target.value)}
             placeholder="Disponibilités, secteurs, préférences, etc."
           />
+        </div>
+
+        {/* Adresse */}
+        <div className="border-t pt-4 space-y-3">
+          <div className="flex items-center justify-between">
+            <h3 className="text-sm font-semibold text-gray-800">Adresse</h3>
+            <label className="inline-flex items-center gap-2 text-xs text-gray-600">
+              <input
+                type="checkbox"
+                checked={clearAddress}
+                onChange={(e) => setClearAddress(e.target.checked)}
+              />
+              Retirer l’adresse (dissocier)
+            </label>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label className="text-sm text-gray-700">Libellé</label>
+              <input
+                className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                placeholder="Cabinet, Domicile…"
+                value={addrLabel}
+                onChange={(e) => setAddrLabel(e.target.value)}
+                disabled={clearAddress}
+              />
+            </div>
+            <div>
+              <label className="text-sm text-gray-700">Pays</label>
+              <input
+                className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                placeholder="FR"
+                value={addrCountry}
+                onChange={(e) => setAddrCountry(e.target.value)}
+                disabled={clearAddress}
+              />
+            </div>
+          </div>
+
+          <div>
+            <label className="text-sm text-gray-700">Adresse (ligne 1)</label>
+            <input
+              className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              placeholder="12 rue des Écuries"
+              value={addrLine1}
+              onChange={(e) => setAddrLine1(e.target.value)}
+              disabled={clearAddress}
+            />
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label className="text-sm text-gray-700">Complément</label>
+              <input
+                className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                placeholder="Bât A, 2e étage…"
+                value={addrLine2}
+                onChange={(e) => setAddrLine2(e.target.value)}
+                disabled={clearAddress}
+              />
+            </div>
+            <div className="grid grid-cols-3 gap-2">
+              <div className="col-span-1">
+                <label className="text-sm text-gray-700">CP</label>
+                <input
+                  className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  placeholder="31540"
+                  value={addrPostal}
+                  onChange={(e) => setAddrPostal(e.target.value)}
+                  disabled={clearAddress}
+                />
+              </div>
+              <div className="col-span-2">
+                <label className="text-sm text-gray-700">Ville</label>
+                <input
+                  className="w-full border border-gray-300 rounded-lg px-3 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  placeholder="Saint-Félix-Lauragais"
+                  value={addrCity}
+                  onChange={(e) => setAddrCity(e.target.value)}
+                  disabled={clearAddress}
+                />
+              </div>
+            </div>
+          </div>
+
+          <p className="text-xs text-gray-500">
+            Renseigne <b>ligne 1 + CP + ville</b> pour lier une adresse. Si tu modifies l’adresse,
+            une nouvelle entrée sera créée au besoin et associée à ce professionnel.
+          </p>
         </div>
 
         {isAdmin && (
